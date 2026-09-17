@@ -54,6 +54,10 @@ impl<T: AsRef<[u8]>> Symbol<T> {
     pub fn into_bytes(self) -> Vec<u8> {
         self.value.as_ref().into()
     }
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.value
+    }
 }
 
 impl<T: AsMut<[u8]>> Symbol<T> {

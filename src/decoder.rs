@@ -314,6 +314,14 @@ impl SourceBlockDecoder {
         storage: &mut SourceBlockStorage<T>,
         packets: I,
     ) -> Option<Vec<u8>> {
+        self.decode_with(storage, packets, |_| ())
+    }
+    pub fn decode_with<T: AsRef<[u8]> + Clone, I: IntoIterator<Item = EncodingPacket<T>>>(
+        &mut self,
+        storage: &mut SourceBlockStorage<T>,
+        packets: I,
+        mut dispose: impl FnMut(T)
+    ) -> Option<Vec<u8>> {
         for packet in packets {
             assert_eq!(
                 self.source_block_id,
@@ -328,10 +336,13 @@ impl SourceBlockDecoder {
                         .push(EncodingPacket::new(payload_id, payload));
                 } else {
                     // Source symbol
-                    storage.source_symbols[payload_id.encoding_symbol_id() as usize] =
-                        Some(Symbol::new(payload));
+                    if let Some(old) = core::mem::replace(&mut storage.source_symbols[payload_id.encoding_symbol_id() as usize], Some(Symbol::new(payload))) {
+                        dispose(old.into_inner());
+                    }
                     self.received_source_symbols += 1;
                 }
+            } else {
+                dispose(payload);
             }
         }
 
