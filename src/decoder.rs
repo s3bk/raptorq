@@ -222,13 +222,14 @@ impl SourceBlockDecoder {
             sub_block_offset += bytes * self.source_block_symbols as usize;
         }
     }
-    fn try_pi_decode<T: AsRef<[u8]> + Clone>(
+    fn try_pi_decode<T: AsRef<[u8]> + Clone, U: AsMut<[u8]>>(
         &mut self,
         storage: &mut SourceBlockStorage<T>,
         constraint_matrix: impl BinaryMatrix,
         hdpc_rows: DenseOctetMatrix,
         symbols: SymbolSlab,
-    ) -> Option<Vec<u8>> {
+        alloc_block: &mut impl FnMut(usize) -> U
+    ) -> Option<U> {
         let intermediate_symbols = match fused_inverse_mul_symbols(
             constraint_matrix,
             hdpc_rows,
@@ -239,7 +240,7 @@ impl SourceBlockDecoder {
             (Some(s), _) => s,
         };
 
-        let mut result = vec![0; self.symbol_size as usize * self.source_block_symbols as usize];
+        let mut result = alloc_block(self.symbol_size as usize * self.source_block_symbols as usize);
         let params = EncodingParameters {
             lt_symbols: num_lt_symbols(self.source_block_symbols),
             pi_symbols: num_pi_symbols(self.source_block_symbols),
@@ -250,7 +251,7 @@ impl SourceBlockDecoder {
         let mut rebuilt_buf = vec![0u8; ss];
         for i in 0..self.source_block_symbols as usize {
             if let Some(ref symbol) = storage.source_symbols[i] {
-                self.unpack_sub_blocks(&mut result, symbol.as_bytes(), i);
+                self.unpack_sub_blocks(result.as_mut(), symbol.as_bytes(), i);
             } else {
                 self.rebuild_source_symbol_into(
                     &mut rebuilt_buf,
@@ -258,7 +259,7 @@ impl SourceBlockDecoder {
                     i as u32,
                     params,
                 );
-                self.unpack_sub_blocks(&mut result, &rebuilt_buf, i);
+                self.unpack_sub_blocks(result.as_mut(), &rebuilt_buf, i);
             }
         }
 
@@ -268,12 +269,13 @@ impl SourceBlockDecoder {
 
     /// Attempt to decode without HDPC rows (pure GF(2) solve).
     /// Returns None if the GF(2)-only system is rank-deficient.
-    fn try_pi_decode_no_hdpc<T: AsRef<[u8]> + Clone>(
+    fn try_pi_decode_no_hdpc<T: AsRef<[u8]> + Clone, U: AsMut<[u8]>>(
         &mut self,
         storage: &mut SourceBlockStorage<T>,
         constraint_matrix: impl BinaryMatrix,
         symbols: SymbolSlab,
-    ) -> Option<Vec<u8>> {
+        mut alloc_block: impl FnMut(usize) -> U
+    ) -> Option<U> {
         let intermediate_symbols = match fused_inverse_mul_symbols_no_hdpc(
             constraint_matrix,
             symbols,
@@ -283,7 +285,7 @@ impl SourceBlockDecoder {
             (Some(s), _) => s,
         };
 
-        let mut result = vec![0; self.symbol_size as usize * self.source_block_symbols as usize];
+        let mut result = alloc_block(self.symbol_size as usize * self.source_block_symbols as usize);
         let params = EncodingParameters {
             lt_symbols: num_lt_symbols(self.source_block_symbols),
             pi_symbols: num_pi_symbols(self.source_block_symbols),
@@ -293,7 +295,7 @@ impl SourceBlockDecoder {
         let mut rebuilt_buf = vec![0u8; self.symbol_size as usize];
         for i in 0..self.source_block_symbols as usize {
             if let Some(ref symbol) = storage.source_symbols[i] {
-                self.unpack_sub_blocks(&mut result, symbol.as_bytes(), i);
+                self.unpack_sub_blocks(result.as_mut(), symbol.as_bytes(), i);
             } else {
                 self.rebuild_source_symbol_into(
                     &mut rebuilt_buf,
@@ -301,7 +303,7 @@ impl SourceBlockDecoder {
                     i as u32,
                     params,
                 );
-                self.unpack_sub_blocks(&mut result, &rebuilt_buf, i);
+                self.unpack_sub_blocks(result.as_mut(), &rebuilt_buf, i);
             }
         }
 
@@ -314,14 +316,20 @@ impl SourceBlockDecoder {
         storage: &mut SourceBlockStorage<T>,
         packets: I,
     ) -> Option<Vec<u8>> {
-        self.decode_with(storage, packets, |_| ())
+        self.decode_with(storage, packets, |_| (), |n| vec![0; n])
     }
-    pub fn decode_with<T: AsRef<[u8]> + Clone, I: IntoIterator<Item = EncodingPacket<T>>>(
+    pub fn decode_with<T, U, I>(
         &mut self,
         storage: &mut SourceBlockStorage<T>,
         packets: I,
-        mut dispose: impl FnMut(T)
-    ) -> Option<Vec<u8>> {
+        mut dispose: impl FnMut(T),
+        mut alloc_block: impl FnMut(usize) -> U
+    ) -> Option<U>
+    where
+        T: AsRef<[u8]> + Clone,
+        U: AsMut<[u8]>,
+        I: IntoIterator<Item = EncodingPacket<T>>
+    {
         for packet in packets {
             assert_eq!(
                 self.source_block_id,
@@ -356,10 +364,9 @@ impl SourceBlockDecoder {
 
         // Case 2: we have all source symbols and can return them without decoding
         if self.received_source_symbols == self.source_block_symbols {
-            let mut result =
-                vec![0; self.symbol_size as usize * self.source_block_symbols as usize];
+            let mut result = alloc_block(self.symbol_size as usize * self.source_block_symbols as usize);
             for (i, symbol) in storage.source_symbols.iter().enumerate() {
-                self.unpack_sub_blocks(&mut result, symbol.as_ref().unwrap().as_bytes(), i);
+                self.unpack_sub_blocks(result.as_mut(), symbol.as_ref().unwrap().as_bytes(), i);
             }
 
             self.decoded = true;
@@ -414,13 +421,13 @@ impl SourceBlockDecoder {
                     self.source_block_symbols,
                     &encoded_isis,
                 );
-                self.try_pi_decode_no_hdpc(storage, matrix, d_no_hdpc)
+                self.try_pi_decode_no_hdpc(storage, matrix, d_no_hdpc, &mut alloc_block)
             } else {
                 let matrix = generate_constraint_matrix_no_hdpc::<DenseBinaryMatrix>(
                     self.source_block_symbols,
                     &encoded_isis,
                 );
-                self.try_pi_decode_no_hdpc(storage, matrix, d_no_hdpc)
+                self.try_pi_decode_no_hdpc(storage, matrix, d_no_hdpc, &mut alloc_block)
             };
             if result.is_some() {
                 return result;
@@ -453,13 +460,13 @@ impl SourceBlockDecoder {
                 self.source_block_symbols,
                 &encoded_isis,
             );
-            self.try_pi_decode(storage, constraint_matrix, hdpc, d)
+            self.try_pi_decode(storage, constraint_matrix, hdpc, d, &mut alloc_block)
         } else {
             let (constraint_matrix, hdpc) = generate_constraint_matrix::<DenseBinaryMatrix>(
                 self.source_block_symbols,
                 &encoded_isis,
             );
-            self.try_pi_decode(storage, constraint_matrix, hdpc, d)
+            self.try_pi_decode(storage, constraint_matrix, hdpc, d, &mut alloc_block)
         }
     }
 
