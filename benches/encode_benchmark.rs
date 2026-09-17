@@ -35,7 +35,7 @@ fn benchmark(symbol_size: u16, pre_plan: bool) -> u64 {
             } else {
                 SourceBlockEncoder::new(1, &config, &data)
             };
-            let packets = encoder.repair_packets(0, 1);
+            let packets = encoder.repair_packets::<Vec<u8>>(0, 1);
             black_box_value += packets[0].data()[0] as u64;
         }
         let elapsed = now.elapsed();

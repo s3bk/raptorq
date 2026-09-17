@@ -1,5 +1,5 @@
 use rand::RngExt;
-use raptorq::{ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
+use raptorq::{ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder, SourceBlockStorage};
 use std::time::Instant;
 
 const TARGET_TOTAL_BYTES: usize = 4 * 1024 * 1024;
@@ -28,8 +28,9 @@ fn benchmark(symbol_size: u16, overhead: f64) -> u64 {
         let now = Instant::now();
         for _ in 0..iterations {
             let mut decoder = SourceBlockDecoder::new(1, &config, elements as u64);
+            let mut storage = SourceBlockStorage::<Vec<u8>>::new(&config, elements as u64);
             let start = packets.len() - elements_and_overhead as usize;
-            if let Some(result) = decoder.decode(packets.drain(start..)) {
+            if let Some(result) = decoder.decode(&mut storage, packets.drain(start..)) {
                 black_box_value += result[0] as u64;
             }
         }

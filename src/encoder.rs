@@ -359,10 +359,17 @@ impl SourceBlockEncoder {
             })
             .collect()
     }
+    pub fn repair_packets<T>(&self, start_repair_symbol_id: u32, packets: u32) -> Vec<EncodingPacket<T>>
+        where T: ZeroInit + AsRef<[u8]> + AsMut<[u8]>
+    {
+        self.repair_packets_with(start_repair_symbol_id, packets, ZeroInit::zero_init)
+    }
 
     // See section 5.3.4
-    pub fn repair_packets<T>(&self, start_repair_symbol_id: u32, packets: u32) -> Vec<EncodingPacket<T>>
-    where T: ZeroInit + AsRef<[u8]> + AsMut<[u8]>
+    pub fn repair_packets_with<T, F>(&self, start_repair_symbol_id: u32, packets: u32, mut make_buffer: F) -> Vec<EncodingPacket<T>>
+    where
+        T: AsRef<[u8]> + AsMut<[u8]>,
+        F: FnMut(usize) -> T
     {
         let start_encoding_symbol_id = start_repair_symbol_id
             + extended_source_block_symbols(self.source_symbols.len() as u32);
@@ -373,7 +380,7 @@ impl SourceBlockEncoder {
         let symbol_size = self.intermediate_symbols.symbol_size();
         for i in 0..packets {
             let tuple = intermediate_tuple(start_encoding_symbol_id + i, lt_symbols, sys_index, p1);
-            let mut data: T = ZeroInit::zero_init(symbol_size);
+            let mut data: T = make_buffer(symbol_size);
             enc_into(
                 data.as_mut(),
                 self.source_symbols.len() as u32,
