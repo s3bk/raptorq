@@ -17,65 +17,63 @@ use serde::{Deserialize, Serialize};
 /// Elementary unit of data, for encoding/decoding purposes.
 #[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
-pub struct Symbol {
-    value: Vec<u8>,
+pub struct Symbol<T=Vec<u8>> {
+    value: T,
 }
 
-impl Symbol {
-    pub fn new(value: Vec<u8>) -> Symbol {
-        Symbol { value }
+impl<T> std::ops::Deref for Symbol<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.value
     }
+}
 
-    /// Initialize a zeroed symbol, with given size.
-    #[allow(dead_code)]
-    pub fn zero<T>(size: T) -> Symbol
-    where
-        T: Into<usize>,
-    {
-        Symbol {
-            value: vec![0; size.into()],
-        }
+impl<T: AsRef<[u8]>> Symbol<T> {
+    pub fn new(value: T) -> Symbol<T> {
+        Symbol { value }
     }
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        self.value.len()
+        self.value.as_ref().len()
     }
 
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.value.is_empty()
+        self.value.as_ref().is_empty()
     }
 
     /// Return the underlying byte slice for a symbol.
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.value
+        self.value.as_ref()
     }
 
     /// Consume a symbol into a vector of bytes.
     #[allow(dead_code)]
     pub fn into_bytes(self) -> Vec<u8> {
-        self.value
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    pub fn mulassign_scalar(&mut self, scalar: &Octet) {
-        mulassign_scalar(&mut self.value, scalar);
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    pub fn fused_addassign_mul_scalar(&mut self, other: &Symbol, scalar: &Octet) {
-        fused_addassign_mul_scalar(&mut self.value, &other.value, scalar);
+        self.value.as_ref().into()
     }
 }
 
-impl<'a> AddAssign<&'a Symbol> for Symbol {
+impl<T: AsMut<[u8]>> Symbol<T> {
+    #[allow(dead_code)]
     #[inline]
-    fn add_assign(&mut self, other: &'a Symbol) {
-        add_assign(&mut self.value, &other.value);
+    pub fn mulassign_scalar(&mut self, scalar: &Octet) {
+        mulassign_scalar(self.value.as_mut(), scalar);
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub fn fused_addassign_mul_scalar<U: AsRef<[u8]>>(&mut self, other: &Symbol<U>, scalar: &Octet) {
+        fused_addassign_mul_scalar(self.value.as_mut(), other.value.as_ref(), scalar);
+    }
+}
+
+impl<'a, T: AsMut<[u8]>, U: AsRef<[u8]>> AddAssign<&'a Symbol<U>> for Symbol<T> {
+    #[inline]
+    fn add_assign(&mut self, other: &'a Symbol<U>) {
+        add_assign(self.value.as_mut(), other.value.as_ref());
     }
 }
 

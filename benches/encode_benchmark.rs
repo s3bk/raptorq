@@ -3,7 +3,7 @@ use raptorq::{ObjectTransmissionInformation, SourceBlockEncoder, SourceBlockEnco
 use std::time::Instant;
 
 const TARGET_TOTAL_BYTES: usize = 128 * 1024 * 1024;
-const SYMBOL_COUNTS: [usize; 10] = [10, 100, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+const SYMBOL_COUNTS: [usize; 10] = [16, 128, 256, 512, 1024, 2048, 5000, 10000, 20000, 50000];
 
 fn black_box(value: u64) {
     if value == rand::rng().random::<u64>() {
@@ -13,7 +13,7 @@ fn black_box(value: u64) {
 
 fn benchmark(symbol_size: u16, pre_plan: bool) -> u64 {
     let mut black_box_value = 0;
-    for symbol_count in SYMBOL_COUNTS.iter() {
+    for symbol_count in (4..16).map(|n| 1usize << n) {
         let elements = symbol_count * symbol_size as usize;
         let mut data: Vec<u8> = vec![0; elements];
         for byte in data.iter_mut() {
@@ -21,7 +21,7 @@ fn benchmark(symbol_size: u16, pre_plan: bool) -> u64 {
         }
 
         let plan = if pre_plan {
-            Some(SourceBlockEncodingPlan::generate(*symbol_count as u16))
+            Some(SourceBlockEncodingPlan::generate(symbol_count as u16))
         } else {
             None
         };
@@ -53,7 +53,7 @@ fn benchmark(symbol_size: u16, pre_plan: bool) -> u64 {
 }
 
 fn main() {
-    let symbol_size = 1280;
+    let symbol_size = 1<<13;
     println!("Symbol size: {symbol_size} bytes (without pre-built plan)");
     black_box(benchmark(symbol_size, false));
     println!();

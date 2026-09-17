@@ -361,7 +361,9 @@ impl SourceBlockEncoder {
     }
 
     // See section 5.3.4
-    pub fn repair_packets(&self, start_repair_symbol_id: u32, packets: u32) -> Vec<EncodingPacket> {
+    pub fn repair_packets<T>(&self, start_repair_symbol_id: u32, packets: u32) -> Vec<EncodingPacket<T>>
+    where T: ZeroInit + AsRef<[u8]> + AsMut<[u8]>
+    {
         let start_encoding_symbol_id = start_repair_symbol_id
             + extended_source_block_symbols(self.source_symbols.len() as u32);
         let mut result = vec![];
@@ -371,9 +373,9 @@ impl SourceBlockEncoder {
         let symbol_size = self.intermediate_symbols.symbol_size();
         for i in 0..packets {
             let tuple = intermediate_tuple(start_encoding_symbol_id + i, lt_symbols, sys_index, p1);
-            let mut data = vec![0u8; symbol_size];
+            let mut data: T = ZeroInit::zero_init(symbol_size);
             enc_into(
-                &mut data,
+                data.as_mut(),
                 self.source_symbols.len() as u32,
                 &self.intermediate_symbols,
                 tuple,
@@ -387,6 +389,23 @@ impl SourceBlockEncoder {
             ));
         }
         result
+    }
+}
+
+pub trait ZeroInit {
+    fn zero_init(size: usize) -> Self;
+}
+impl ZeroInit for Vec<u8> {
+    #[inline]
+    fn zero_init(size: usize) -> Self {
+        vec![0; size]
+    }
+}
+impl<const N: usize> ZeroInit for [u8; N] {
+    #[inline]
+    fn zero_init(size: usize) -> Self {
+        assert_eq!(size, N);
+        [0; N]
     }
 }
 
@@ -621,7 +640,7 @@ mod tests {
         );
         assert_eq!(
             encoder
-                .repair_packets(2, 4)
+                .repair_packets::<Vec<u8>>(2, 4)
                 .into_iter()
                 .map(|p| p.payload_id.encoding_symbol_id())
                 .collect::<Vec<_>>(),

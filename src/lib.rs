@@ -48,12 +48,10 @@ pub use crate::base::PayloadId;
 pub use crate::base::partition;
 #[cfg(not(feature = "python"))]
 pub use crate::decoder::Decoder;
-pub use crate::decoder::SourceBlockDecoder;
+pub use crate::decoder::{SourceBlockDecoder, SourceBlockStorage};
 #[cfg(not(feature = "python"))]
 pub use crate::encoder::Encoder;
-pub use crate::encoder::EncoderBuilder;
-pub use crate::encoder::SourceBlockEncoder;
-pub use crate::encoder::SourceBlockEncodingPlan;
+pub use crate::encoder::{EncoderBuilder, ZeroInit, SourceBlockEncoder, SourceBlockEncodingPlan};
 pub use crate::encoder::calculate_block_offsets;
 #[cfg(feature = "python")]
 pub use crate::python::Decoder;
@@ -75,7 +73,6 @@ pub use crate::octet::Octet;
 pub use crate::pi_solver::IntermediateSymbolDecoder;
 #[cfg(feature = "benchmarking")]
 pub use crate::sparse_matrix::SparseBinaryMatrix;
-#[cfg(feature = "benchmarking")]
 pub use crate::symbol::Symbol;
 #[cfg(feature = "benchmarking")]
 pub use crate::symbol_slab::SymbolSlab;

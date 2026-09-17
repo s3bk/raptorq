@@ -216,6 +216,10 @@ impl SymbolSlab {
             mapping: None,
         }
     }
+
+    pub fn assign(&mut self, row: usize, data: &[u8]) {
+        self.get_mut(row).copy_from_slice(data);
+    }
 }
 
 #[cfg(feature = "std")]

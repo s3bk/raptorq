@@ -16,7 +16,7 @@ use crate::util::int_div_ceil;
 use serde::{Deserialize, Serialize};
 
 // As defined in section 3.2
-#[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct PayloadId {
     source_block_number: u8,
@@ -64,46 +64,56 @@ impl PayloadId {
 /// As defined in section [4.4.2](https://tools.ietf.org/html/rfc6330#section-4.4.2).
 #[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
-pub struct EncodingPacket {
+pub struct EncodingPacket<T=Vec<u8>> {
     pub(crate) payload_id: PayloadId,
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: T,
 }
 
-impl EncodingPacket {
-    pub fn new(payload_id: PayloadId, data: Vec<u8>) -> EncodingPacket {
+impl<T: AsRef<[u8]>> EncodingPacket<T> {
+    #[inline]
+    pub fn new(payload_id: PayloadId, data: T) -> EncodingPacket<T> {
         EncodingPacket { payload_id, data }
     }
 
-    pub fn deserialize(data: &[u8]) -> EncodingPacket {
+    /// Retrieves packet payload ID.
+    #[inline]
+    pub fn payload_id(&self) -> &PayloadId {
+        &self.payload_id
+    }
+
+    /// Retrieves packet payload.
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+
+    /// Split a packet into its underlying ID and payload.
+    #[inline]
+    pub fn split(self) -> (PayloadId, T) {
+        (self.payload_id, self.data)
+    }
+
+    #[inline]
+    pub fn map<U>(&self, f: impl FnOnce(&T) -> &U) -> EncodingPacket<&U> {
+        EncodingPacket { payload_id: self.payload_id, data: f(&self.data) }
+    }
+}
+impl EncodingPacket<Vec<u8>> {
+    pub fn deserialize(data: &[u8]) -> EncodingPacket<Vec<u8>> {
         let payload_data = [data[0], data[1], data[2], data[3]];
         EncodingPacket {
             payload_id: PayloadId::deserialize(&payload_data),
             data: Vec::from(&data[4..]),
         }
     }
-
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::with_capacity(4 + self.data.len());
         serialized.extend_from_slice(&self.payload_id.serialize());
         serialized.extend(self.data.iter());
         return serialized;
     }
-
-    /// Retrieves packet payload ID.
-    pub fn payload_id(&self) -> &PayloadId {
-        &self.payload_id
-    }
-
-    /// Retrieves packet payload.
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Split a packet into its underlying ID and payload.
-    pub fn split(self) -> (PayloadId, Vec<u8>) {
-        (self.payload_id, self.data)
-    }
 }
+
 
 // As defined in section 3.3.2 and 3.3.3
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]

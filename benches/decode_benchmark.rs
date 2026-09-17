@@ -2,7 +2,7 @@ use rand::RngExt;
 use raptorq::{ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
 use std::time::Instant;
 
-const TARGET_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+const TARGET_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 const SYMBOL_COUNTS: [usize; 10] = [10, 100, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000];
 
 fn black_box(value: u64) {
@@ -13,7 +13,7 @@ fn black_box(value: u64) {
 
 fn benchmark(symbol_size: u16, overhead: f64) -> u64 {
     let mut black_box_value = 0;
-    for &symbol_count in SYMBOL_COUNTS.iter() {
+    for symbol_count in (4..16).map(|n| 1usize << n) {
         let elements = symbol_count * symbol_size as usize;
         let mut data: Vec<u8> = vec![0; elements];
         for byte in data.iter_mut() {
@@ -50,9 +50,10 @@ fn benchmark(symbol_size: u16, overhead: f64) -> u64 {
 }
 
 fn main() {
-    let symbol_size = 1280;
-    println!("Symbol size: {symbol_size} bytes");
+    let symbol_size = 1<<13;
+    println!("Symbol size: {symbol_size} bytes (overhead=0.0)");
     black_box(benchmark(symbol_size, 0.0));
-    println!();
+
+    println!("Symbol size: {symbol_size} bytes (overhead=0.05)");
     black_box(benchmark(symbol_size, 0.05));
 }

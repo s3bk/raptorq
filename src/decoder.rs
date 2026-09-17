@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Decoder {
     config: ObjectTransmissionInformation,
-    block_decoders: Vec<SourceBlockDecoder>,
+    block_decoders: Vec<(SourceBlockDecoder, SourceBlockStorage<Vec<u8>>)>,
     blocks: Vec<Option<Vec<u8>>>,
 }
 
@@ -49,19 +49,25 @@ impl Decoder {
 
         let mut decoders = vec![];
         for i in 0..zl {
-            decoders.push(SourceBlockDecoder::new(
+            let block_length = u64::from(kl) * u64::from(config.symbol_size());
+            let decoder = SourceBlockDecoder::new(
                 i as u8,
                 &config,
-                u64::from(kl) * u64::from(config.symbol_size()),
-            ));
+                block_length,
+            );
+            let storage = SourceBlockStorage::new(&config, block_length);
+            decoders.push((decoder, storage));
         }
 
         for i in zl..(zl + zs) {
-            decoders.push(SourceBlockDecoder::new(
+            let block_length = u64::from(ks) * u64::from(config.symbol_size());
+            let decoder = SourceBlockDecoder::new(
                 i as u8,
                 &config,
-                u64::from(ks) * u64::from(config.symbol_size()),
-            ));
+                block_length,
+            );
+            let storage = SourceBlockStorage::new(&config, block_length);
+            decoders.push((decoder, storage));
         }
 
         Decoder {
@@ -73,7 +79,7 @@ impl Decoder {
 
     #[cfg(all(any(test, feature = "benchmarking"), not(feature = "python")))]
     pub fn set_sparse_threshold(&mut self, value: u32) {
-        for block_decoder in self.block_decoders.iter_mut() {
+        for (block_decoder, _storage) in self.block_decoders.iter_mut() {
             block_decoder.set_sparse_threshold(value);
         }
     }
@@ -81,8 +87,9 @@ impl Decoder {
     pub fn decode(&mut self, packet: EncodingPacket) -> Option<Vec<u8>> {
         let block_number = packet.payload_id.source_block_number() as usize;
         if self.blocks[block_number].is_none() {
+            let (ref mut decoder, ref mut storage) = self.block_decoders[block_number];
             self.blocks[block_number] =
-                self.block_decoders[block_number].decode(iter::once(packet));
+                decoder.decode(storage, iter::once(packet));
         }
         for block in self.blocks.iter() {
             if block.is_none() {
@@ -103,8 +110,9 @@ impl Decoder {
     pub fn add_new_packet(&mut self, packet: EncodingPacket) {
         let block_number = packet.payload_id.source_block_number() as usize;
         if self.blocks[block_number].is_none() {
+            let (ref mut decoder, ref mut storage) = self.block_decoders[block_number];
             self.blocks[block_number] =
-                self.block_decoders[block_number].decode(iter::once(packet));
+                decoder.decode(storage, iter::once(packet));
         }
     }
 
@@ -133,12 +141,17 @@ pub struct SourceBlockDecoder {
     num_sub_blocks: u16,
     symbol_alignment: u8,
     source_block_symbols: u32,
-    source_symbols: Vec<Option<Symbol>>,
-    repair_packets: Vec<EncodingPacket>,
     received_source_symbols: u32,
     received_esi: Set<u32>,
     decoded: bool,
     sparse_threshold: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+pub struct SourceBlockStorage<T=Vec<u8>> {
+    pub source_symbols: Vec<Option<Symbol<T>>>,
+    pub repair_packets: Vec<EncodingPacket<T>>,
 }
 
 #[derive(Copy, Clone)]
@@ -148,6 +161,20 @@ struct EncodingParameters {
     sys_index: u32,
     p1: u32,
 }
+impl<T: AsRef<[u8]> + Clone> SourceBlockStorage<T> {
+    pub fn new(
+        config: &ObjectTransmissionInformation,
+        block_length: u64,
+    ) -> SourceBlockStorage<T> {
+        let source_symbols = int_div_ceil(block_length, config.symbol_size() as u64);
+
+        SourceBlockStorage {
+            source_symbols: vec![None; source_symbols as usize],
+            repair_packets: vec![],
+        }
+    }
+}
+
 impl SourceBlockDecoder {
     pub fn new(
         source_block_id: u8,
@@ -162,8 +189,6 @@ impl SourceBlockDecoder {
             num_sub_blocks: config.sub_blocks(),
             symbol_alignment: config.symbol_alignment(),
             source_block_symbols: source_symbols,
-            source_symbols: vec![None; source_symbols as usize],
-            repair_packets: vec![],
             received_source_symbols: 0,
             received_esi: Set::new(),
             decoded: false,
@@ -197,9 +222,9 @@ impl SourceBlockDecoder {
             sub_block_offset += bytes * self.source_block_symbols as usize;
         }
     }
-
-    fn try_pi_decode(
+    fn try_pi_decode<T: AsRef<[u8]> + Clone>(
         &mut self,
+        storage: &mut SourceBlockStorage<T>,
         constraint_matrix: impl BinaryMatrix,
         hdpc_rows: DenseOctetMatrix,
         symbols: SymbolSlab,
@@ -224,7 +249,7 @@ impl SourceBlockDecoder {
         let ss = self.symbol_size as usize;
         let mut rebuilt_buf = vec![0u8; ss];
         for i in 0..self.source_block_symbols as usize {
-            if let Some(ref symbol) = self.source_symbols[i] {
+            if let Some(ref symbol) = storage.source_symbols[i] {
                 self.unpack_sub_blocks(&mut result, symbol.as_bytes(), i);
             } else {
                 self.rebuild_source_symbol_into(
@@ -243,8 +268,9 @@ impl SourceBlockDecoder {
 
     /// Attempt to decode without HDPC rows (pure GF(2) solve).
     /// Returns None if the GF(2)-only system is rank-deficient.
-    fn try_pi_decode_no_hdpc(
+    fn try_pi_decode_no_hdpc<T: AsRef<[u8]> + Clone>(
         &mut self,
+        storage: &mut SourceBlockStorage<T>,
         constraint_matrix: impl BinaryMatrix,
         symbols: SymbolSlab,
     ) -> Option<Vec<u8>> {
@@ -266,7 +292,7 @@ impl SourceBlockDecoder {
         };
         let mut rebuilt_buf = vec![0u8; self.symbol_size as usize];
         for i in 0..self.source_block_symbols as usize {
-            if let Some(ref symbol) = self.source_symbols[i] {
+            if let Some(ref symbol) = storage.source_symbols[i] {
                 self.unpack_sub_blocks(&mut result, symbol.as_bytes(), i);
             } else {
                 self.rebuild_source_symbol_into(
@@ -283,9 +309,10 @@ impl SourceBlockDecoder {
         Some(result)
     }
 
-    pub fn decode<T: IntoIterator<Item = EncodingPacket>>(
+    pub fn decode<T: AsRef<[u8]> + Clone, I: IntoIterator<Item = EncodingPacket<T>>>(
         &mut self,
-        packets: T,
+        storage: &mut SourceBlockStorage<T>,
+        packets: I,
     ) -> Option<Vec<u8>> {
         for packet in packets {
             assert_eq!(
@@ -297,11 +324,11 @@ impl SourceBlockDecoder {
             if self.received_esi.insert(payload_id.encoding_symbol_id()) {
                 if payload_id.encoding_symbol_id() >= self.source_block_symbols {
                     // Repair symbol
-                    self.repair_packets
+                    storage.repair_packets
                         .push(EncodingPacket::new(payload_id, payload));
                 } else {
                     // Source symbol
-                    self.source_symbols[payload_id.encoding_symbol_id() as usize] =
+                    storage.source_symbols[payload_id.encoding_symbol_id() as usize] =
                         Some(Symbol::new(payload));
                     self.received_source_symbols += 1;
                 }
@@ -320,7 +347,7 @@ impl SourceBlockDecoder {
         if self.received_source_symbols == self.source_block_symbols {
             let mut result =
                 vec![0; self.symbol_size as usize * self.source_block_symbols as usize];
-            for (i, symbol) in self.source_symbols.iter().enumerate() {
+            for (i, symbol) in storage.source_symbols.iter().enumerate() {
                 self.unpack_sub_blocks(&mut result, symbol.as_ref().unwrap().as_bytes(), i);
             }
 
@@ -334,7 +361,7 @@ impl SourceBlockDecoder {
         let l = num_intermediate_symbols(self.source_block_symbols) as usize;
 
         let mut encoded_isis = vec![];
-        for (i, source) in self.source_symbols.iter().enumerate() {
+        for (i, source) in storage.source_symbols.iter().enumerate() {
             if source.is_some() {
                 encoded_isis.push(i as u32);
             }
@@ -342,7 +369,7 @@ impl SourceBlockDecoder {
         for i in self.source_block_symbols..num_extended_symbols {
             encoded_isis.push(i);
         }
-        for repair_packet in self.repair_packets.iter() {
+        for repair_packet in storage.repair_packets.iter() {
             encoded_isis.push(repair_packet.payload_id.encoding_symbol_id() + num_padding_symbols);
         }
 
@@ -350,14 +377,14 @@ impl SourceBlockDecoder {
         // This avoids expensive GF(256) operations in the solver.
         // We need at least L total rows: S LDPC + encoded >= L, i.e. encoded >= K' + H.
         let num_padding = (num_extended_symbols - self.source_block_symbols) as usize;
-        let num_repair = self.repair_packets.len();
+        let num_repair = storage.repair_packets.len();
         let ss = self.symbol_size as usize;
         if s + encoded_isis.len() >= l {
             let total_no_hdpc =
                 s + self.received_source_symbols as usize + num_padding + num_repair;
             let mut d_no_hdpc = SymbolSlab::with_zeros(total_no_hdpc, ss);
             let mut row = s;
-            for symbol in self.source_symbols.iter().flatten() {
+            for symbol in storage.source_symbols.iter().flatten() {
                 d_no_hdpc.get_mut(row).copy_from_slice(symbol.as_bytes());
                 row += 1;
             }
@@ -365,8 +392,8 @@ impl SourceBlockDecoder {
                 // Padding row already zero
                 row += 1;
             }
-            for repair_packet in self.repair_packets.iter() {
-                d_no_hdpc.get_mut(row).copy_from_slice(&repair_packet.data);
+            for repair_packet in storage.repair_packets.iter() {
+                d_no_hdpc.assign(row, repair_packet.data());
                 row += 1;
             }
             assert_eq!(row, total_no_hdpc);
@@ -376,13 +403,13 @@ impl SourceBlockDecoder {
                     self.source_block_symbols,
                     &encoded_isis,
                 );
-                self.try_pi_decode_no_hdpc(matrix, d_no_hdpc)
+                self.try_pi_decode_no_hdpc(storage, matrix, d_no_hdpc)
             } else {
                 let matrix = generate_constraint_matrix_no_hdpc::<DenseBinaryMatrix>(
                     self.source_block_symbols,
                     &encoded_isis,
                 );
-                self.try_pi_decode_no_hdpc(matrix, d_no_hdpc)
+                self.try_pi_decode_no_hdpc(storage, matrix, d_no_hdpc)
             };
             if result.is_some() {
                 return result;
@@ -396,16 +423,16 @@ impl SourceBlockDecoder {
         let total = s + h + self.received_source_symbols as usize + num_padding + num_repair;
         let mut d = SymbolSlab::with_zeros(total, ss);
         let mut row = s + h;
-        for symbol in self.source_symbols.iter().flatten() {
-            d.get_mut(row).copy_from_slice(symbol.as_bytes());
+        for symbol in storage.source_symbols.iter().flatten() {
+            d.assign(row, symbol.as_bytes());
             row += 1;
         }
         for _i in self.source_block_symbols..num_extended_symbols {
             // Padding row already zero
             row += 1;
         }
-        for repair_packet in self.repair_packets.iter() {
-            d.get_mut(row).copy_from_slice(&repair_packet.data);
+        for repair_packet in storage.repair_packets.iter() {
+            d.assign(row, repair_packet.data());
             row += 1;
         }
         assert_eq!(row, total);
@@ -415,13 +442,13 @@ impl SourceBlockDecoder {
                 self.source_block_symbols,
                 &encoded_isis,
             );
-            self.try_pi_decode(constraint_matrix, hdpc, d)
+            self.try_pi_decode(storage, constraint_matrix, hdpc, d)
         } else {
             let (constraint_matrix, hdpc) = generate_constraint_matrix::<DenseBinaryMatrix>(
                 self.source_block_symbols,
                 &encoded_isis,
             );
-            self.try_pi_decode(constraint_matrix, hdpc, d)
+            self.try_pi_decode(storage, constraint_matrix, hdpc, d)
         }
     }
 
@@ -473,13 +500,14 @@ mod codec_tests {
 
     #[cfg(not(feature = "python"))]
     use crate::Decoder;
-    use crate::systematic_constants::{num_intermediate_symbols, num_ldpc_symbols};
+    use crate::{systematic_constants::{num_intermediate_symbols, num_ldpc_symbols}};
     #[cfg(not(feature = "python"))]
     use crate::{Encoder, EncoderBuilder};
     use crate::{
         ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder,
         SourceBlockEncodingPlan,
     };
+    type SourceBlockStorage = crate::decoder::SourceBlockStorage::<Vec<u8>>;
 
     #[cfg(not(feature = "python"))]
     #[test]
@@ -609,12 +637,13 @@ mod codec_tests {
             let encoder = SourceBlockEncoder::new(1, &config, &data);
 
             let mut decoder = SourceBlockDecoder::new(1, &config, elements as u64);
+            let mut storage = SourceBlockStorage::new(&config, elements as u64);
             decoder.set_sparse_threshold(sparse_threshold);
 
             let mut result = None;
             for packet in encoder.source_packets() {
                 assert_eq!(result, None);
-                result = decoder.decode(iter::once(packet));
+                result = decoder.decode(&mut storage, iter::once(packet));
             }
 
             assert_eq!(result.unwrap(), data);
@@ -672,8 +701,9 @@ mod codec_tests {
         let mut packets = encoder.repair_packets(0, iterations as u32 * elements_and_overhead);
         for _ in 0..iterations {
             let mut decoder = SourceBlockDecoder::new(1, &config, elements as u64);
+            let mut storage = SourceBlockStorage::new(&config, elements as u64);
             let start = packets.len() - elements_and_overhead as usize;
-            decoder.decode(packets.drain(start..));
+            decoder.decode(&mut storage, packets.drain(start..));
         }
     }
 
@@ -718,6 +748,7 @@ mod codec_tests {
         };
 
         let mut decoder = SourceBlockDecoder::new(1, &config, elements as u64);
+        let mut storage = SourceBlockStorage::new(&config, elements as u64);
         decoder.set_sparse_threshold(sparse_threshold);
 
         let mut result = None;
@@ -730,7 +761,7 @@ mod codec_tests {
             if parsed_packets < elements / symbol_size && result.is_some() {
                 return false;
             }
-            result = decoder.decode(iter::once(packet));
+            result = decoder.decode(&mut storage, iter::once(packet));
         }
 
         return result.unwrap() == data;
@@ -766,8 +797,9 @@ mod codec_tests {
             assert!(num_ldpc_symbols(k) + received_encoded >= num_intermediate_symbols(k));
 
             let mut decoder = SourceBlockDecoder::new(1, &config, elements as u64);
+            let mut storage = SourceBlockStorage::new(&config, elements as u64);
             let all_packets = source_packets.into_iter().chain(repair_packets);
-            let result = decoder.decode(all_packets);
+            let result = decoder.decode(&mut storage, all_packets);
 
             assert!(
                 result.is_some(),
@@ -804,9 +836,10 @@ mod codec_tests {
             let repair_packets = encoder.repair_packets(0, repair_count);
 
             let mut decoder = SourceBlockDecoder::new(1, &config, elements as u64);
+            let mut storage = SourceBlockStorage::new(&config, elements as u64);
             let mut result = None;
             for packet in repair_packets {
-                result = decoder.decode(iter::once(packet));
+                result = decoder.decode(&mut storage, iter::once(packet));
                 if result.is_some() {
                     break;
                 }
